@@ -19,7 +19,9 @@ global:
 
 
 disturbance_observer:
-  g: 2500.0 # 500.0
+  g_dob: 50.0
+  dob_gain: 0.0
+  max_dob_torque: 50.0
   T: 0.001
 
 
@@ -37,7 +39,7 @@ follower:
 gripper:
   gripper_port: 49187
   object_width: 0.055
-  gripping_force: 90
+  gripping_force: 70
   speed: 0.1
-  close_threshold: 0.08
-  open_threshold: 0.06
+  close_threshold: 0.06
+  open_threshold: 0.08

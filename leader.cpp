@@ -748,11 +748,11 @@ int main()
 
     // Disturbance-observer parameters. Start conservatively and tune gradually.
     const double g_dob =
-        readOptionalDouble(config, "global", "g_dob", 50.0);
+    readOptionalDouble(config, "disturbance_observer", "g_dob", 1.0);
     const double dob_gain =
-        readOptionalDouble(config, "global", "dob_gain", 1);
+        readOptionalDouble(config, "disturbance_observer", "dob_gain", 1);
     const double max_dob_torque =
-        readOptionalDouble(config, "global", "max_dob_torque", 50.0);
+        readOptionalDouble(config, "disturbance_observer", "max_dob_torque", 1.0);
 
     if (!(g_dob > 0.0) || !(dob_gain >= 0.0) ||
         !(max_dob_torque > 0.0))
