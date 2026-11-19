@@ -71,17 +71,31 @@ namespace
 struct RecordSample {
   double local_time = 0.0;
   double robot_time = 0.0;
+  double control_dt = 0.0;
+  double packet_age_ms = 0.0;
   bool follower_connected = false;
+
   std::array<double, kJointCount> leader_pos{};
   std::array<double, kJointCount> leader_vel{};
   std::array<double, kJointCount> leader_ext_trq{};
   std::array<double, kJointCount> leader_trq{};
+
   std::array<double, kJointCount> follower_pos{};
   std::array<double, kJointCount> follower_vel{};
   std::array<double, kJointCount> follower_ext_trq{};
   std::array<double, kJointCount> follower_trq{};
+
+  std::array<double, kJointCount> position_error{};
+  std::array<double, kJointCount> velocity_error{};
+  std::array<double, kJointCount> torque_error{};
+
   std::array<double, kJointCount> desired_acc{};
   std::array<double, kJointCount> command_trq{};
+
+  std::array<double, 3> leader_ee_pos{};
+  std::array<double, 3> follower_ee_pos{};
+
+  std::array<double, 3> ee_position_error{};
 };
 
 std::array<RecordSample, kRecordQueueCapacity> record_queue;
@@ -195,8 +209,9 @@ void writeArrayHeader(std::ofstream& file, const char* prefix) {
   }
 }
 
+template <std::size_t N>
 void writeArray(std::ofstream& file,
-                const std::array<double, kJointCount>& values) {
+                const std::array<double, N>& values) {
   for (double value : values) {
     file << ',' << value;
   }
@@ -211,17 +226,28 @@ void recorderThread() {
   while (running.load(std::memory_order_relaxed) ||
          record_read_index.load(std::memory_order_acquire) !=
              record_write_index.load(std::memory_order_acquire)) {
-    const bool should_record = recording.load(std::memory_order_acquire);
+
+    const bool should_record =
+        recording.load(std::memory_order_acquire);
 
     if (should_record && !session_active) {
       const std::string filename = makeRecordingFilename();
       file.open(filename, std::ios::out | std::ios::trunc);
       if (!file) {
-        std::cerr << "Could not open recording file: " << filename << '\n';
+        std::cerr
+            << "Could not open recording file: "
+            << filename << '\n';
+
         recording.store(false, std::memory_order_release);
       } else {
         file << std::setprecision(17);
-        file << "local_time_s,robot_time_s,follower_connected";
+
+        file << "local_time_s"
+             << ",robot_time_s"
+             << ",control_dt_s"
+             << ",packet_age_ms"
+             << ",follower_connected";
+
         writeArrayHeader(file, "leader_q");
         writeArrayHeader(file, "leader_dq");
         writeArrayHeader(file, "leader_tau_ext");
@@ -230,52 +256,114 @@ void recorderThread() {
         writeArrayHeader(file, "follower_dq");
         writeArrayHeader(file, "follower_tau_ext");
         writeArrayHeader(file, "follower_tau");
+        writeArrayHeader(file, "position_error");
+        writeArrayHeader(file, "velocity_error");
+        writeArrayHeader(file, "torque_error");
         writeArrayHeader(file, "desired_ddq");
         writeArrayHeader(file, "command_tau");
+
+        file << ",leader_ee_x"
+            << ",leader_ee_y"
+            << ",leader_ee_z";
+
+        file << ",follower_ee_x"
+            << ",follower_ee_y"
+            << ",follower_ee_z";
+
+        file << ",ee_position_error_x"
+            << ",ee_position_error_y"
+            << ",ee_position_error_z";
+
         file << '\n';
+
         session_dropped_start =
-            dropped_record_samples.load(std::memory_order_relaxed);
+            dropped_record_samples.load(
+                std::memory_order_relaxed);
+
         session_active = true;
         last_flush = Clock::now();
-        std::cout << "Recording started: " << filename << '\n';
+
+        std::cout
+            << "Recording started: "
+            << filename << '\n';
       }
     }
 
     RecordSample sample;
     bool wrote_sample = false;
     while (dequeueRecordSample(sample)) {
-      if (session_active) {
-        file << sample.local_time << ',' << sample.robot_time << ','
-             << (sample.follower_connected ? 1 : 0);
-        writeArray(file, sample.leader_pos);
-        writeArray(file, sample.leader_vel);
-        writeArray(file, sample.leader_ext_trq);
-        writeArray(file, sample.leader_trq);
-        writeArray(file, sample.follower_pos);
-        writeArray(file, sample.follower_vel);
-        writeArray(file, sample.follower_ext_trq);
-        writeArray(file, sample.follower_trq);
-        writeArray(file, sample.desired_acc);
-        writeArray(file, sample.command_trq);
-        file << '\n';
-        wrote_sample = true;
+
+      if (!session_active) {
+        // Don't write samples that belong to a previous session.
+        continue;
       }
+
+      file << sample.local_time
+           << ','
+           << sample.robot_time
+           << ','
+           << sample.control_dt
+           << ','
+           << sample.packet_age_ms
+           << ','
+           << (sample.follower_connected ? 1 : 0);
+
+      // Leader
+      writeArray(file, sample.leader_pos);
+      writeArray(file, sample.leader_vel);
+      writeArray(file, sample.leader_ext_trq);
+      writeArray(file, sample.leader_trq);
+
+      // Follower
+      writeArray(file, sample.follower_pos);
+      writeArray(file, sample.follower_vel);
+      writeArray(file, sample.follower_ext_trq);
+      writeArray(file, sample.follower_trq);
+
+      // Errors
+      writeArray(file, sample.position_error);
+      writeArray(file, sample.velocity_error);
+      writeArray(file, sample.torque_error);
+
+      writeArray(file, sample.desired_acc);
+      writeArray(file, sample.command_trq);
+
+      // End effector
+      writeArray(file, sample.leader_ee_pos);
+      writeArray(file, sample.follower_ee_pos);
+      writeArray(file, sample.ee_position_error);
+
+      file << '\n';
+
+      wrote_sample = true;
     }
 
     if (!should_record && session_active) {
       file.flush();
       file.close();
-      const auto dropped = dropped_record_samples.load(std::memory_order_relaxed) -
-                           session_dropped_start;
-      std::cout << "Recording stopped. Dropped samples: " << dropped << '\n';
+
+      const auto dropped =
+          dropped_record_samples.load(
+              std::memory_order_relaxed) -
+          session_dropped_start;
+
+      std::cout
+          << "Recording stopped. "
+          << "Dropped samples: "
+          << dropped << '\n';
+
       session_active = false;
-    } else if (wrote_sample && Clock::now() - last_flush >= std::chrono::seconds(1)) {
-      // Periodic flushing is intentionally done outside the control callback.
+    }
+    else if (wrote_sample &&
+             Clock::now() - last_flush >=
+                 std::chrono::seconds(1)) {
+
       file.flush();
       last_flush = Clock::now();
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(2));
   }
 
   if (file.is_open()) {
@@ -766,7 +854,7 @@ int main()
 
     const std::array<double, kJointCount> home_position = {
         0.0, -0.78539816, 0.0, -2.35619449, 0.0, 1.57079633, 0.78539816};
-    MotionGenerator motion_generator(0.20, home_position);
+    MotionGenerator motion_generator(0.10, home_position);
     robot.control(motion_generator);
 
     robot.setCollisionBehavior(
@@ -873,22 +961,35 @@ int main()
       const std::array<double, 49> mass_matrix = model.mass(robot_state);
       std::array<double, kJointCount> desired_acceleration{};
 
+      std::array<double, kJointCount> position_error{};
+      std::array<double, kJointCount> velocity_error{};
+      std::array<double, kJointCount> torque_error{};
+
+
       for (std::size_t i = 0; i < kJointCount; ++i)
       {
 
 #ifdef TELEOP_BILATERAL
 
-        const double position_error = robot_state.theta[i] - cached_follower_data.pos[i];
+        position_error[i] = robot_state.theta[i] - cached_follower_data.pos[i];
 
-        const double velocity_error = differentiated_velocity[i] - cached_follower_data.vel[i];
+        velocity_error[i] = differentiated_velocity[i] - cached_follower_data.vel[i];
 
-        const double velocity_sum = differentiated_velocity[i] + cached_follower_data.vel[i];
+        const double velocity_sum =
+            differentiated_velocity[i] + cached_follower_data.vel[i];
 
-        const double external_torque_sum = robot_state.tau_ext_hat_filtered[i] + cached_follower_data.ext_trq[i];
+        const double external_torque_sum =
+            robot_state.tau_ext_hat_filtered[i] +
+            cached_follower_data.ext_trq[i];
+
+        torque_error[i] =
+            robot_state.tau_ext_hat_filtered[i] -
+            cached_follower_data.ext_trq[i];
+
 
         desired_acceleration[i] =
-            -(c_q[i] / 2.0) * position_error -
-            (c_v[i] / 2.0) * velocity_error -
+            -(c_q[i] / 2.0) * position_error[i] -
+            (c_v[i] / 2.0) * velocity_error[i] -
             (c_y[i] / 2.0) * velocity_sum -
             (c_f[i] / 2.0) * external_torque_sum;
 
@@ -936,20 +1037,47 @@ int main()
       
       if (recording.load(std::memory_order_relaxed)) {
         RecordSample sample;
+
         sample.local_time = nowSeconds();
         sample.robot_time = robot_state.time.toSec();
+        sample.control_dt = dt;
+        sample.packet_age_ms =
+            static_cast<double>(packet_age_ns) / 1e6;
+
         sample.follower_connected =
             sub_connected.load(std::memory_order_relaxed);
+
+        // Leader
         sample.leader_pos = robot_state.theta;
         sample.leader_vel = differentiated_velocity;
         sample.leader_ext_trq = robot_state.tau_ext_hat_filtered;
         sample.leader_trq = robot_state.tau_J;
+
+        // Follower
         sample.follower_pos = cached_follower_data.pos;
         sample.follower_vel = cached_follower_data.vel;
         sample.follower_ext_trq = cached_follower_data.ext_trq;
         sample.follower_trq = cached_follower_data.trq;
+
+        // Bilateral errors
+        sample.position_error = position_error;
+        sample.velocity_error = velocity_error;
+        sample.torque_error = torque_error;
+
+        // Controller
         sample.desired_acc = desired_acceleration;
         sample.command_trq = rate_limited_torques;
+
+        // // End effector
+        // sample.leader_ee_pos = leader_ee_pos;
+        // sample.follower_ee_pos = follower_ee_pos;
+
+        // sample.ee_position_error = {
+        //     sample.leader_ee_pos[0] - sample.follower_ee_pos[0],
+        //     sample.leader_ee_pos[1] - sample.follower_ee_pos[1],
+        //     sample.leader_ee_pos[2] - sample.follower_ee_pos[2]
+        // };
+
         enqueueRecordSample(sample);
       }
 
