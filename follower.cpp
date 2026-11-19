@@ -735,6 +735,7 @@ int main()
       }
 
       const std::array<double, 49> mass_matrix = model.mass(robot_state);
+      const std::array<double, kJointCount> coriolis_torques = model.coriolis(robot_state);
       std::array<double, kJointCount> desired_acceleration{};
 
       for (std::size_t i = 0; i < kJointCount; ++i)
@@ -758,7 +759,7 @@ int main()
 
         const double nominal_inertia = mass_matrix[i * kJointCount + i];
 
-        const double nominal_torque = nominal_inertia * desired_acceleration[i];
+        const double nominal_torque = nominal_inertia * desired_acceleration[i] + coriolis_torques[i];
 
         const double omega = differentiated_velocity[i];
 
